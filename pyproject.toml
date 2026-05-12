@@ -1,0 +1,15 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "printerbugnew"
+version = "0.1.0"
+description = "Print Spooler RPC/TCP trigger for Windows 11 22H2+ / Server 2025"
+requires-python = ">=3.8"
+dependencies = [
+    "impacket",
+]
+
+[project.scripts]
+printerbugnew = "printerbugnew.cli:main"

